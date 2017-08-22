@@ -1,0 +1,33 @@
+Partlist
+
+Exported from optoshield3.sch at 21.08.17 23:17
+
+EAGLE Version 6.6.0 Copyright (c) 1988-2014 CadSoft
+
+Assembly variant: 
+
+Part     Value          Device          Package        Library             Sheet
+
+C1       100nF          C-EU025-025X050 C025-025X050   rcl                 1
+C2       100nF          C-EU025-025X050 C025-025X050   rcl                 1
+C5       100uF          CPOL-EUE3.5-10  E3,5-10        resistor            1
+IC1      7805TV         7805TV          TO220V         linear              1
+J1       22-27-2031-03  22-27-2031-03   6410-03        con-molex           1
+J2       22-27-2031-03  22-27-2031-03   6410-03        con-molex           1
+J3       22-27-2031-03  22-27-2031-03   6410-03        con-molex           1
+J4       22-27-2031-03  22-27-2031-03   6410-03        con-molex           1
+J5       22-27-2031-03  22-27-2031-03   6410-03        con-molex           1
+J6       22-27-2031-03  22-27-2031-03   6410-03        con-molex           1
+J7       22-27-2031-03  22-27-2031-03   6410-03        con-molex           1
+J8       22-27-2031-03  22-27-2031-03   6410-03        con-molex           1
+JP1      CTRL           PINHD-1X6       1X06           pinhead             1
+PWR      +5V            AK500/2         AK500/2        con-ptr500          1
+R1       510R           R-EU_0207/10    0207/10        rcl                 1
+R2       4k7            R-EU_0207/10    0207/10        rcl                 1
+R3       1k             R-EU_0207/10    0207/10        resistor            1
+RN1      4k7            RN04            RN-5           resistor-net        1
+RN2      4k7            RN04            RN-5           resistor-net        1
+S88-IN   RJ45-6L-B      RJ45-6L-B       RJ45-NO-SHIELD con-tycoelectronics 1
+S88-OUT  RJ45-6L-B      RJ45-6L-B       RJ45-NO-SHIELD con-tycoelectronics 1
+T1       BC337          BC337           TO92           transistor          1
+U$1      NANO           NANO            NANO           Arduino-clone       1
