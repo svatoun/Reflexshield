@@ -52,9 +52,13 @@
 
 #include <Bounce2.h>
 #include <EEPROM.h>
+#include "Common.h"
 
-const int debug = 0;            // set to >0 to activate debug output on the serial console. The collector will use delays 200ms and will print stats each 2s
-const int debugControl = 0;     // debug control commands
+#define STARTUP_MSG "ReflexShield (c) Belgarat@klfree.net, v. 1.1, 10/2018"
+
+const int debug = 1;            // set to >0 to activate debug output on the serial console. The collector will use delays 200ms and will print stats each 2s
+const int debugSensors = 0;
+const int debugControl = 1;     // debug control commands
 const int debugS88 = 0;
 const int numChannels = 8;      // number of sensors used. Max 5 on Arduino UNO, 8 on Nano.
 
@@ -62,7 +66,7 @@ const int reductionLight = 250;   // the percentage will be reduced 4 times if t
 
 const int counterThreshold = 3;     // minimum sensor counter level to consider the sensor seeing the reflected LED light
 const int defaultThreshold= 450;    // default sensor threshold for 'occupied'
-const int occupiedThresholdReduction = 75;  // when occupied, the threshold is lowered to this percentage of the configured value.
+const int occupiedThresholdReduction = 65;  // when occupied, the threshold is lowered to this percentage of the configured value.
 const int defaultDebounce = 200;    // default debounce, when the sensor goes off
 
 // The layout of the optoshield assumes, that HIGH on common LED control output will trigger a tranzistor to connect LEDs to GND.
@@ -108,7 +112,10 @@ const int discardMeasuresAfterChange = 2; // how many ADC readings should be dis
 
 const int eepromThresholdBase = 0x00;
 const int eepromDebounceBase = 0x10;
+const int eepromInvertBase = 0x20;
 const int eepromChecksum = 0x30;
+
+extern void (* charModeCallback)(char);
 
 // The OUTPUT; this is the S88 sensor value, A0 is mapped to bit 0. Bits for unused channels are set to 0.
 volatile byte sensorStateBits;
@@ -124,6 +131,8 @@ int sensorDebounces[] = {
 long sensorLastUp[] = {
   -1, -1, -1, -1, -1, -1, -1, -1  
 };
+
+byte sensorInvert = 0x00;
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -160,7 +169,7 @@ long lastDisplayMillis;   // time of the last diagnostic display on serial line
 int collectDisplayCount = 1;
 boolean sometimesDebug;
 
-int configChannel = 0;
+int configChannel = -1;
 int cfgState;
 long configLastCommand;
 
@@ -171,6 +180,7 @@ long configLastCommand;
 #define CONFIG_CALIBRATE_HIGH 4 // calibrating high sensitivity
 #define CONFIG_CALIBRATE_LOW  5 // calibrating low sensitivity
 #define CONFIG_CALIBRATE_WAIT  6 // calibrating low sensitivity
+#define CONFIG_CALIBRATE_DEBOUNCE 7
 
 
 void startAnalogRead(int channel) {
@@ -214,10 +224,9 @@ void initializeS88Pins() {
 
 void setup() {
   // put your setup code here, to run once:
-  if (debug || debugS88 || debugControl) {
-    Serial.begin(115200);
-    Serial.println("Starting up...");
-  }
+  Serial.begin(115200);
+  Serial.println(STARTUP_MSG);
+  Serial.println("Starting up...");
 
   // DISABLE internal pull-ups for analog inputs, there's an external pull-down resistor.
   for (int i = 0; i < numChannels; i++) {
@@ -230,6 +239,8 @@ void setup() {
     pinMode(digitalOutputs[i], OUTPUT);
     digitalWrite(digitalOutputs[i], ledOffValue);
   }
+
+  setupTerminal();
 
   initializeS88Pins();
 
@@ -295,7 +306,18 @@ void setup() {
   sei();
   startAnalogRead(input);
   delay(10);
+
+  initTerminal();
   initialLoadEEPROM();
+
+  registerLineCommand("SAV", &commandSave);
+  registerLineCommand("DMP", &commandDump);
+  registerLineCommand("INF", &commandInfo);
+  registerLineCommand("CAL", &commandCalibrate);
+  registerLineCommand("MON", &commandMonitor);
+  registerLineCommand("CAD", &commandCalibrateDebounce);
+  registerLineCommand("SEN", &commandSensitivity);
+
 }
 
 // Interrupt service routine for the ADC completion
@@ -338,8 +360,8 @@ int collectADC() {
   lastReadCycles = cycles;
   lastCycle = readCycles;
   if (cycles == 0) {
-    if (debug) {
-      Serial.println("No read cycles!");
+    if (debugSensors) {
+      Serial.println(F("No read cycles!"));
     }
     return 0;
   }
@@ -383,7 +405,7 @@ void updateSensorCounters() {
     for (int x = 0; x < numChannels; x++) {
         int res = resultHigh[x];
 
-        if ((configChannel > -1) && (configChannel == x)) {
+        if (configChannel == x) {
           if (calibrationMin > res) {
             calibrationMin = res;
           }
@@ -440,6 +462,9 @@ int switchLEDState() {
   return ledState;
 }
 
+volatile long maxConfigSensorDebounce = 0;
+long configSensorDebounce = 0;
+
 /**
  * Evaluates sensor state, builds the S88 response byte
  */
@@ -453,14 +478,23 @@ void updateSensorBits() {
     if (sensorCounters[i] > counterThreshold) {
       result |= v;
       sensorLastUp[i] = t;
-    } else if ((lastState & (1 << i)) > 0) {
-      long up = sensorLastUp[i];
-      // if going down, wait at least the 'debounce' time before dropping the sensor bit from the result.
-      if (up != -1 && ((t - up) < sensorDebounces[i])) {
-        if (sometimesDebug) {
-          Serial.print(F("Sensor debounced: ")); Serial.print(i); Serial.print(F(", time left: ")); Serial.println(t - sensorLastUp[i]);
+    } else {
+      if ((lastState & (1 << i)) > 0) {
+        long up = sensorLastUp[i];
+        long diff = (t - up);
+        if (i == configChannel) {
+          configSensorDebounce = diff;
+          if (maxConfigSensorDebounce < configSensorDebounce) {
+            maxConfigSensorDebounce = configSensorDebounce;
+          }
         }
-        result |= v;
+        // if going down, wait at least the 'debounce' time before dropping the sensor bit from the result.
+        if (up != -1 && (diff < sensorDebounces[i])) {
+          if (sometimesDebug) {
+            Serial.print(F("Sensor debounced: ")); Serial.print(i); Serial.print(F(", time left: ")); Serial.println(t - sensorLastUp[i]);
+          }
+          result |= v;
+        }
       }
     }
     sensorCounters[i] = 0;
@@ -509,7 +543,7 @@ void loop() {
   }
   sometimesDebug = 0;
   delay(sampleMillis);
-  if (debug) {
+  if (debugSensors) {
     if (--collectDisplayCount == 0) {
       collectDisplayCount = 13;
       sometimesDebug = 1;
@@ -521,7 +555,7 @@ void loop() {
     delayMicroseconds(50);
   } else {
     errors++;
-    if (debug) {
+    if (debugSensors) {
       Serial.print("Error");
     }
   }
@@ -543,6 +577,8 @@ void loop() {
   handleButtons();
   handleAckLed();
   handleCalibration();
+  handleMonitor();
+  processTerminal();
 }
 
 // -------------------- Configuration automaton ------------------------
@@ -569,6 +605,11 @@ const int blinkCalibrateEnd[] =  { 1000, 250, 1000, 250, 250, 500 , 0 };
 const int blinkReset[] = { 1000, 250, 1000, 250, 1000, 250, 1000, 250, 0 };  // blink 4x, long; reset
 
 // ========================= EEPROM functions ================================
+int eepromWriteByte(int addr, byte t, int& checksum) {
+    checksum = checksum ^ t;
+    EEPROM.update(addr++, (t & 0xff));
+}
+
 int eepromWriteInt(int addr, int t, int& checksum) {
     checksum = checksum ^ t;
     EEPROM.update(addr++, (t & 0xff));
@@ -581,7 +622,7 @@ int eepromWriteInt(int addr, int t, int& checksum) {
 
 void writeEEPROM() {
   if (debugControl) {
-    Serial.println("Save to EEPROM"); 
+    Serial.println(F("Save to EEPROM"));
     Serial.println("Writing sensitivity");
   }
   int eeAddr = eepromThresholdBase;
@@ -598,7 +639,7 @@ void writeEEPROM() {
     int t = sensorDebounces[i];
     eeAddr = eepromWriteInt(eeAddr, t, check);
   }
-  
+  eepromWriteByte(eepromInvertBase, sensorInvert, check);
   // checksum
   if (debugControl) {
     Serial.print(F("\nEEPROM checksum: ")); Serial.println(check & 0xff, HEX);
@@ -616,6 +657,7 @@ void initializeEEPROM() {
     sensorThresholds[i] = defaultThreshold;
     sensorDebounces[i] = defaultDebounce;
   }
+  sensorInvert = 0;
   writeEEPROM();
   
   // signal through main LED
@@ -630,20 +672,33 @@ void initializeEEPROM() {
   }
 }
 
+void commandClear() {
+  resetEEPROM();
+  commandReset();
+}
+
 void resetEEPROM() {
   initializeEEPROM();
   initialLoadEEPROM();
   makeLedAck(&blinkReset[0]);
 }
 
+int readEepromByte(int &addr, int& checksum, boolean& allzero) {
+    int v = EEPROM.read(addr);
+    addr ++;
+    checksum = checksum ^ v;
+    return v;
+}
+
 int readEepromInt(int &addr, int& checksum, boolean& allzero) {
     int v = EEPROM.read(addr) + (EEPROM.read(addr + 1) << 8);
     addr += 2;
     checksum = checksum ^ v;
-    Serial.print(v & 0xff, HEX); Serial.print((v >> 8) & 0xff, HEX); Serial.print(" ");
+    Serial.print(v & 0xff, HEX); Serial.print("-"); Serial.print((v >> 8) & 0xff, HEX); Serial.print(" ");
     if (v != 0) {
       allzero = false;
     }
+    Serial.print(F(" = ")); Serial.println(v);
     return v;
 }
 
@@ -662,6 +717,8 @@ void initialLoadEEPROM() {
   for (int i = 0; i < numChannels; i++) {
       sensorDebounces[i] = readEepromInt(eeAddr, check, allzero);
   }
+  eeAddr = eepromInvertBase;
+  sensorInvert = readEepromByte(eeAddr, check, allzero);
   int eeChecksumVal = EEPROM.read(eepromChecksum);
   if (allzero || ((check & 0xff) != eeChecksumVal)) {
     if (debugControl) {
@@ -988,11 +1045,29 @@ void endCalibrateSensitivity() {
   makeLedAck(&blinkThrice[0]);
 }
 
+/**
+ * calibration start time, millis(). The calibration cycle will end after
+ * some additional millis
+ */
 long calibrationStart = -1;
+
+/**
+ * Max measured sensor in empty state
+ */
 int emptyHigh;
+/**
+ * Min measured sensor in empty state
+ */
 int emptyLow;
 
+/**
+ * Calibration confirmed by the terminal, rather
+ * than button
+ */
+boolean terminalConfirm = false;
+
 void startCalibration() {
+  Serial.print(F("Calibrating sensor #")); Serial.println(configChannel + 1);
   cfgState = CONFIG_CALIBRATE_LOW;
   makeLedAck(&blinkCalibrateLow[0]);
   setupCalibration();
@@ -1002,37 +1077,65 @@ void setupCalibration() {
   calibrationMax = -1;
   calibrationMin = 1000;
   calibrationStart = millis();
+  terminalConfirm = false;
   if (debugControl) {
     Serial.println("Calibration started");
   }
 }
 
+boolean terminalCalibration = false;
+
 void handleCalibration() {
+  long m = millis();
   switch (cfgState) {
     case CONFIG_CALIBRATE_LOW: {
-      long m = millis();
       if ((calibrationStart > -1) && 
           ((m - calibrationStart) > calibrationTime)) {
         makeLedAck(&blinkCalibrateCont[0]);
         calibrationStart = -1;
         emptyHigh = calibrationMax;
         emptyLow = calibrationMin;
-        if (debugControl) {
-          Serial.print(F("Calibration: empty read, low = ")); Serial.print(emptyLow); Serial.print(F(", high = ")); Serial.println(emptyHigh);
-        }
+        Serial.print(F("Calibration: empty read, low = ")); Serial.print(emptyLow); Serial.print(F(", high = ")); Serial.println(emptyHigh);
+        Serial.println(F("Empty calibration complete, cover sensor and press ENTER to calibrate obstacle"));
       }
       return;
     }
     case CONFIG_CALIBRATE_HIGH:  
-      long m = millis();
       if (calibrationStart > -1 && 
           ((m - calibrationStart) > calibrationTime)) {
         makeLedAck(&blinkCalibrateEnd[0]);
         calibrationStart = -1;
-        cfgState = CONFIG_SENSE;
         computeSensitivity();
+        Serial.println(F("Calibration complete"));
+        if (terminalCalibration) {
+          cfgState = CONFIG_NONE;
+          resetTerminal();
+          return;
+        } else {
+          cfgState = CONFIG_SENSE;
+        }
         return;
       }
+
+    case CONFIG_CALIBRATE_DEBOUNCE:
+      if (calibrationStart > -1 && 
+          ((m - calibrationStart) > calibrationTime)) {
+          long m = maxConfigSensorDebounce;
+          long debounceTime = (m * 4 / 3);
+          if (debounceTime < 30) {
+            debounceTime = defaultDebounce;
+          }
+          if (debounceTime > 1000) {
+            debounceTime = 1000;
+          }
+          sensorDebounces[configChannel] = debounceTime;
+          Serial.print(F("Debounce calibration complete. Set to "));   Serial.println(debounceTime);
+          if (terminalCalibration) {
+            resetTerminal();
+          }
+          cfgState = CONFIG_NONE;
+      }
+      return;
   }
 }
 
@@ -1046,7 +1149,6 @@ void computeSensitivity() {
    int v = max(c, m);
    Serial.print(F("Sensor threshold: ")); Serial.println(v);
    sensorThresholds[configChannel] = v;
-   
 }
 
 /**
@@ -1056,6 +1158,7 @@ void computeSensitivity() {
 void configChannelSense() {
   if (nextLen > 0) {
     if (nextLen > configButtonPress) {
+      terminalCalibration = false;
         startCalibration();
         return;
     }
@@ -1141,14 +1244,26 @@ void configChannelSense() {
   }
 }
 
-void exitConfiguration() {
+boolean exitConfigurationNoReload() {
+    if (cfgState == CONFIG_NONE) {
+      return false;
+    }
     cfgState = CONFIG_NONE;
     if (debugControl) {
       Serial.println(F("Exited configuration"));
     }
-    initialLoadEEPROM();
     makeLedAck(&blinkConfigEnd[0]);
     configChannel = -1;
+    terminalCalibration = false;
+    terminalConfirm = false;
+    resetTerminal();
+    return true;
+}
+
+void exitConfiguration() {
+  if (exitConfigurationNoReload()) {
+    initialLoadEEPROM();
+  }
 }
 
 void interpretButtons() {
@@ -1178,16 +1293,178 @@ void interpretButtons() {
       configChannelDebounce();
       return;
     case CONFIG_CALIBRATE_LOW:
-      if (calibrationStart == -1 && nextLen > 0) {
+      if (calibrationStart == -1 && (terminalConfirm || nextLen > 0)) {
         if (debugControl) {
           Serial.println(F("Performing occupied calibration"));
         }
         makeLedAck(&blinkTwice[0]);
         cfgState = CONFIG_CALIBRATE_HIGH;
-        calibrationStart = millis();
+        setupCalibration();
       }
       return;
   }
+}
+
+/**
+ * Vypise stav senzoru
+ */
+void commandInfo() {
+  Serial.println(F("Sensor status:"));
+  printSensorStatus();
+  Serial.println();
+}
+
+int sensorStatusLen = 0;
+
+void printSensorStatus() {
+  byte b = sensorStateBits;
+  sensorStatusLen = 0;
+  for (int mask = 0x80; mask > 0; mask >>= 1) {
+    Serial.print(b & mask ? "1" : "0");
+    sensorStatusLen++;
+    if (mask > 1) {
+      sensorStatusLen++;
+      Serial.print("-");
+    }
+  }
+}
+
+void calibrationBlockKeys(char x) {
+  if (x == 0) {
+    exitConfigurationNoReload();
+    return;
+  }
+  if (x == '\n' || x == '\r') {
+    switch (cfgState) {
+      case CONFIG_CALIBRATE_LOW:
+      case CONFIG_CALIBRATE_HIGH:
+        nextLen = 5;
+        terminalConfirm = true;
+        break;
+    }
+  }
+}
+
+void commandCalibrate() {
+  int channel = nextNumber();
+  if (channel < 1 || channel > numChannels) {
+    Serial.println(F("Bad channel"));
+    return;
+  }
+  configChannel = 0; //channel - 1;
+  terminalCalibration = true;
+  charModeCallback = &calibrationBlockKeys;
+  startCalibration();  
+}
+
+void commandSensitivity() {
+  int channel = nextNumber();
+  if (channel < 1 || channel > numChannels) {
+    Serial.println(F("Bad channel"));
+    return;
+  }
+  int threshold = nextNumber();
+  if (threshold < 0 || threshold > 1000) {
+    Serial.println(F("Bad threshold"));
+    return;
+  }
+  int debounce = nextNumber();
+  if (debounce == -2) {
+    debounce = defaultDebounce;
+  }
+  channel--;
+  sensorThresholds[channel] = threshold;
+  sensorDebounces[channel] = debounce;
+}
+
+void commandSave() {
+  writeEEPROM();
+  Serial.println(F("Saved."));
+}
+
+void commandDump() {
+  for (int i = 0; i < numChannels; i++) {
+    int sens = sensorThresholds[i];
+    int deb = sensorDebounces[i];
+    Serial.print("SEN:"); Serial.print(i); Serial.print(':'); Serial.print(sens);
+    if (deb != defaultDebounce) {
+      Serial.print(':'); Serial.print(deb);
+    }
+    Serial.println();
+  }
+}
+
+void monitorCallback(char c) {
+  switch (c) {
+    case '\n':
+      Serial.println("\n");
+      break;
+    case 'q':
+      Serial.println(F("\nMonitoring stopped.\n"));
+      resetTerminal();
+      break;
+  }
+}
+
+void commandCalibrateDebounce() {
+  int ch = nextNumber();
+  if (ch < 1 || ch > numChannels) {
+    Serial.println(F("Bad channel"));
+    return;
+  }
+  ch--;
+  configChannel = ch;
+  cfgState = CONFIG_CALIBRATE_DEBOUNCE;
+  setupCalibration();
+  maxConfigSensorDebounce = 0;
+  terminalCalibration = true;
+  charModeCallback = &calibrationBlockKeys;
+}
+
+const int monitorTimeThreshold = 200;
+long lastMonitorTime = 0;
+
+void handleMonitor() {
+  if (charModeCallback != &monitorCallback) {
+    return;
+  }
+
+  long t = millis();
+  if ((t - lastMonitorTime) < monitorTimeThreshold) {
+    return;
+  }
+  
+  lastMonitorTime = t;
+  printSensorStatus();
+  for (int i = 0; i < sensorStatusLen; i++) {
+    Serial.print("\b");
+  }
+}
+
+void commandMonitor() {
+  Serial.println(F("Monitoring sensors"));
+  for (int i = 1; i <= numChannels; i++) {
+    if (i < 10) {
+      Serial.print(' ');
+    } else {
+      Serial.print(i / 10);
+    }
+    Serial.print(' ');
+  }
+  Serial.println();
+  int count = 0;
+  for (int i = 1; i < numChannels; i++) {
+    Serial.print(i % 10);
+    Serial.print(' ');
+    count +=2 ;
+  }
+  Serial.println();
+  for (int i = 1; i < count; i++) {
+    Serial.print('=');
+  }
+  Serial.println();
+  lastMonitorTime = 0;
+  charModeCallback = &monitorCallback;
 }
 
 // -------------------- S88 Section ----------------------------
