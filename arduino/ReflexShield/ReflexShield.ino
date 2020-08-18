@@ -62,7 +62,7 @@
 #define STARTUP_MSG "ReflexShield (c) Belgarat@klfree.net, v. 1.1, 10/2018"
 
 const int debug = 1;            // set to >0 to activate debug output on the serial console. The collector will use delays 200ms and will print stats each 2s
-const int debugSensors = 0;
+const int debugSensors = 1;
 const int debugControl = 1;     // debug control commands
 const int debugS88 = 0;
 const int numChannels = 8;      // number of sensors used. Max 5 on Arduino UNO, 8 on Nano.
@@ -111,9 +111,25 @@ const int senseMin = 100;           // maximum sensitivity
 const int debounceMin = 0;      
 const int debounceMax = 1000;
 
-const int analogInputs[] = { A0, A1, A2, A3, A4, A5, A6, A7 };
-const int digitalOutputs[] = { 12, 12, 12, 12, 12, 12, 12, 12 };  // LEDs for individual detectors. Now controlled by single pin, all LEDs are lit/dark at the same time.
+const int analogInputs[numChannels] = { A0, A1, A2, A3, A4, A5, A6, A7 };
+const int digitalOutputs[numChannels] = { 12, 12, 11, 11, 9, 9, 10, 10 };  // LEDs for individual detectors. Now controlled by single pin, all LEDs are lit/dark at the same time.
 const int discardMeasuresAfterChange = 2; // how many ADC readings should be discarded after input channel change; this is instead of delay :) One reading = 104 usec.
+
+// Number of scan cycles.
+const byte ledSlotCount = 4;
+
+// Maximum number of LEDs in each cycle.
+const byte ledSlotSize = 2;
+
+// Defines which LEDs are on in each cycle. The rest of LEDs are off. -1 means an unused slot.
+const short cycleLedsOn[ledSlotCount][ledSlotSize] = {
+  { 0, 1, },
+  { 2, 3, },
+  { 4, 5, },
+  { 6, 7, }
+};
+
+const short disabledScanning[] = { -1 };
 
 const int eepromThresholdBase = 0x00;
 const int eepromDebounceBase = 0x10;
@@ -150,7 +166,6 @@ int mux;  // the ADCMUX value saved after initialization; will be used as a base
 volatile long measureLow[numChannels];      // inputs measured in 'low' state without LED; cummulative value
 volatile long measureHigh[numChannels];     // inputs measured in 'high' state with LED on; cummulative value
 volatile int measureSamples[numChannels];   // how many samples are accumulated in individual channel's input. Since the ADC conversion is driven by interrupt,
-volatile int ledState;                      // the current LED light state; applies to all channels
 volatile int adcConversionCounter;          // number of ADC conversion left for the current input
 
 int resultLow[numChannels];   // averaged value for 'low' led state
@@ -161,7 +176,14 @@ int calibrationMin = 1000;
 int calibrationMax = -1;
 
 // ---------- Variables used by ADC value collecting routing ---------------
-int input;     // the current input number; cycles from 0 to numChannels - 1
+short slotId = 0;
+
+short scanLedInputs[ledSlotSize * 2] = { -1 };
+short scanLedStates = 0x00;
+
+const int ledInputsCount = sizeof(scanLedInputs) / sizeof(scanLedInputs[0]);
+
+int input;     // the current input number; index into scanLedInputs
 int wasSwitch; // nonzero if input switch happened; discard one ADC reading after the switch
 
 volatile long intCount;     // debug only: the number of ADC interrupts. 
@@ -187,12 +209,18 @@ long configLastCommand;
 #define CONFIG_CALIBRATE_WAIT  6 // calibrating low sensitivity
 #define CONFIG_CALIBRATE_DEBOUNCE 7
 
+// Initiates asynchronous (intr) analog read of an input. Physical pin is taken from analogInputs,
+// so the 'channel' parameter is a channel number.
 void startAnalogRead(int channel) {
-  noInterrupts();
-  ADMUX = (mux & ~0x07) | channel;
+  if (channel < 0) {
+    channel = 0;
+  } else if (channel > 7) {
+    channel = 7;
+  }
+  int pn = analogInputs[channel] - A0;
+  ADMUX = (mux & ~0x07) | pn;
   ADCSRA |= (1 << ADSC);  // start ADC measurements 
   adcConversionCounter = inputADCConversions;
-  interrupts();
 }
 
 void initialSignalBlink() {
@@ -212,6 +240,7 @@ void initialSignalBlink() {
   }
 }
 
+// Initializes S88 interface
 void initializeS88Pins() {
   // Initialize S88 pins
   pinMode(LOAD_INT_0, INPUT_PULLUP) ;
@@ -262,6 +291,7 @@ void setup() {
   pinMode(BUTTON_PLUS, INPUT);
   pinMode(BUTTON_MINUS, INPUT);
   pinMode(BUTTON_NEXT, INPUT);
+  
   // internal pullups
   digitalWrite(BUTTON_PLUS, HIGH);
   digitalWrite(BUTTON_MINUS, HIGH);
@@ -306,10 +336,7 @@ void setup() {
   // save the ADMUX value, will be combined with desired analog input later.
   mux = ADMUX;
 
-  // start from input #0
-  input = 0;
   sei();
-  startAnalogRead(input);
   delay(10);
 
   initTerminal();
@@ -330,35 +357,119 @@ ISR(ADC_vect)
 {
   int readLo = ADCL; // ADCL must be read first; reading ADCH will trigger next coversion.
   int readHi = ADCH; 
+
+  int outNo = scanLedInputs[input];
   if (wasSwitch) {
     wasSwitch--;
     // discard the first reading(s) after input switch. 
-    startAnalogRead(input);
+    startAnalogRead(outNo);
+    interrupts();
     return;
   }
   intCount++;
   int v = (readHi << 8) | readLo;
-  if (ledState) {
-    measureHigh[input] += v;
-  } else {
-    measureLow[input] += v;
+
+  if (outNo >= numChannels) {
+    interrupts();
+    return;
   }
-  measureSamples[input]++;
+
+  boolean state = (scanLedStates & (1 << input)) > 0;
+  if (state) {
+    measureHigh[outNo] += v;
+  } else {
+    measureLow[outNo] += v;
+  }
+  measureSamples[outNo]++;
   
   if (adcConversionCounter--) {
     return;
   }
+  
   // the proper number of conversions passed, advance the input.
-  input = (input + 1) % numChannels;
-  if (input == 0) {
-    readCycles++;
-  }
+  advanceInput();
   wasSwitch = discardMeasuresAfterChange;
-  startAnalogRead(input);
+
+  outNo = scanLedInputs[input];
+
+  // disable scanning, if outNo == -1.
+  if (outNo != -1) {
+    startAnalogRead(outNo);
+  }
+  interrupts();
+}
+
+void advanceInput() {
+  input++;
+  if (input < ledInputsCount) {
+    short out = scanLedInputs[input];
+    if (out >= 0) {
+      // OK, output selected
+      return;
+    }
+  }
+  input = 0;
+
+  short id = selectNextCycle();
+  if (id == -1) {
+    // effectively disable the scanning.
+    scanLedInputs[0] = -1;
+    return;
+  }
+}
+
+void configureCycle(int slot) {
+  int idx = 0;
+
+  // Copy LEDs that have been ON
+  for (int from = 0; from < scanLedInputsCount; from++) {
+    int l = scanLedInputs[from];
+    if (l == -1) {
+      break;
+    }
+    boolean state = (scanLedStates & (1 << l)) > 0;
+    if (state) {
+      scanLedInputs[idx++] = l;
+    }
+  }
+  scanLedStates = 0;
+}
+
+int selectNextCycle() {
+  short id = slotId;
+  if (id < 0) {
+    id = 0;
+  }
+  for (short cnt = 0; cnt < cycleCount; cnt++, id = (id + 1) % cycleCount) {
+    short enabledMask = (1 << id);
+    if ((enabledCycles & enabledMask) > 0) {
+      return id;
+    }
+  }
+  return -1;
 }
 
 int errors; // accumulate cases where the samples were read although readCycles was not incremented
 int lastCycle; // last cycle observed by the main loop.
+
+void switchLEDState() {
+  short mask = 0;
+  for (int i = 0; i < numChannels; i++) {
+    int n = (1 << digitalOutputs[i]);
+    if ((mask & n) > 0) {
+      continue;
+    }
+    mask |= n;
+    int ledState = currentState(i);
+    digitalWrite(digitalOutputs[i], ledState ? ledOnValue : ledOffValue);
+    if (sometimesDebug) {
+      Serial.print(F("OUT #")); Serial.print(i); Serial.print("="); Serial.print(ledState); Serial.print(" ");
+    }
+  }
+  if (sometimesDebug) {
+    Serial.println();
+  }
+}
 
 int collectADC() {
   int cycles = readCycles - lastCycle;
@@ -373,20 +484,23 @@ int collectADC() {
   noInterrupts(); // prevent the ADC interrupt to fiddle with the longs.
   // compute averages
   if (sometimesDebug) {
-    Serial.print(ledState ? "High: " : "Low:  ");
-    Serial.print("Cycles: "); Serial.print(cycles); Serial.print(" ");
+    Serial.print(F("Cycles: ")); Serial.print(cycles); Serial.print(F(" Interrupts: ")); Serial.print(intCount); Serial.print(" ");
   }
   collectIntCount = intCount;
   intCount = 0;
-  for (int i = 0; i < numChannels; i++) {
+  
+  for (int index = 0; index < ledSlotSize; index++) {
+    int i = currentInputs[index];
+    int ledState = currentState(i);
     int count = measureSamples[i];
     long sum = ledState ? measureHigh[i] : measureLow[i];
     int ave = sum / count;  // round up/down
+    
     (ledState ? resultHigh : resultLow)[i] = ave;
     if (sometimesDebug) {
-      Serial.print("#"); Serial.print(i); Serial.print(" = "); Serial.print(ave); Serial.print(", ");
+      Serial.print("#"); Serial.print(i); Serial.print("["); Serial.print(ledState); Serial.print("] = "); Serial.print(ave); Serial.print(", ");
     }
-
+  
     if (ledState) {
       measureHigh[i] = 0;
     } else {
@@ -394,7 +508,6 @@ int collectADC() {
     }
     measureSamples[i] = 0;
   }
-  readCycles = lastCycle = 0;
   interrupts();
   if (sometimesDebug) {
     Serial.println();
@@ -404,9 +517,6 @@ int collectADC() {
 
 // update tracking counters for each sensor, when the LED is (currently) lit
 void updateSensorCounters() {
-    if (!ledState) {
-      return;
-    }
     for (int x = 0; x < numChannels; x++) {
         int res = resultHigh[x];
 
@@ -441,7 +551,7 @@ void updateSensorCounters() {
           Serial.print(", Low = "); Serial.print(resultLow[x]);
           Serial.print(", High = "); Serial.print(resultHigh[x]);
           Serial.print(", Comp = "); Serial.print(comp);
-          Serial.print(", Range = "); Serial.print(range);
+          Serial.print(", Range = "); Serial.print(diff);
 //          Serial.print(", Thresh = "); Serial.print(thr);
           Serial.print(", CNT = "); Serial.print(sensorCounters[x]); Serial.println("");
         }
@@ -449,21 +559,6 @@ void updateSensorCounters() {
     if (sometimesDebug) {
       Serial.println();
     }
-}
-
-void switchLEDState() {
-  noInterrupts();
-  if (sometimesDebug) {
-    Serial.print(F("Led state was: ")); Serial.println(ledState);
-  }
-  ledState = ledState ? 0 : 1;
-  for (int i = 0; i < numChannels; i++) {
-    digitalWrite(digitalOutputs[i], ledState ? ledOnValue : ledOffValue);
-  }
-  if (sometimesDebug) {
-    Serial.print(F("Switched LED ")); Serial.println(ledState);
-  }
-  interrupts();
 }
 
 volatile long maxConfigSensorDebounce = 0;
