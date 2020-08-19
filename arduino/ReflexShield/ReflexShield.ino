@@ -59,11 +59,13 @@
 #include "Common.h"
 #include "Settings.h"
 
-#define STARTUP_MSG "ReflexShield (c) Belgarat@klfree.net, v. 1.1, 10/2018"
+#define STARTUP_MSG "ReflexShield (c) Belgarat@klfree.net, v. 1.2, 9/2020"
 
 const int debug = 1;            // set to >0 to activate debug output on the serial console. The collector will use delays 200ms and will print stats each 2s
-const int debugSensors = 0;
+const int debugSensors = 1;
+const int debugLow = 0;
 const int debugControl = 1;     // debug control commands
+const int debugMgmt = 1;
 const int debugS88 = 0;
 const int numChannels = 8;      // number of sensors used. Max 5 on Arduino UNO, 8 on Nano.
 
@@ -80,9 +82,9 @@ const int defaultDebounce = 200;    // default debounce, when the sensor goes of
 const int ledOnValue  = HIGH;
 const int ledOffValue  = (ledOnValue == HIGH ? LOW : HIGH);
 
-const int BUTTON_PLUS     = 9;
+const int BUTTON_PLUS     = 8;
 const int BUTTON_MINUS    = 8;
-const int BUTTON_NEXT     = 7;
+const int BUTTON_NEXT     = 8;
 
 const int longButtonPress = 500;       // long press, millseconds
 const int configButtonPress = 2000;     // config button press, milliseconds
@@ -96,8 +98,8 @@ const int DATA_IN         = 4 ;        // data in
 const int DATA_OUT        = 5 ;        // data out
 const int LED_SIGNAL      = 13;       // signal LED
 
-const int LED_ACK         = 11;       // ACK LEd
-const int LED_STATUS      = 10;       // ACK LEd
+const int LED_ACK         = 7;       // ACK LEd
+const int LED_STATUS      = 6;       // ACK LEd
 
 const int reportS88Loss = 1;          // will flash LED if S88 CLK signal is not present
 
@@ -112,13 +114,22 @@ const int debounceMin = 0;
 const int debounceMax = 1000;
 
 const int analogInputs[] = { A0, A1, A2, A3, A4, A5, A6, A7 };
-const int digitalOutputs[] = { 12, 12, 12, 12, 12, 12, 12, 12 };  // LEDs for individual detectors. Now controlled by single pin, all LEDs are lit/dark at the same time.
+const int digitalOutputs[] = { 12, 12, 11, 11, 9, 9, 10, 10};  // LEDs for individual detectors. Now controlled by single pin, all LEDs are lit/dark at the same time.
 const int discardMeasuresAfterChange = 2; // how many ADC readings should be discarded after input channel change; this is instead of delay :) One reading = 104 usec.
 
 const int eepromThresholdBase = 0x00;
 const int eepromDebounceBase = 0x10;
 const int eepromInvertBase = 0x20;
 const int eepromChecksum = 0x30;
+
+const int ledSlotsCount = 4;
+const int ledSlotSize = 2;
+const short ledSlots[ledSlotsCount][ledSlotSize] = {
+  { 0, 1 },
+  { 2, 3 },
+  { 4, 5 },
+  { 6, 7 }
+};
 
 extern void (* charModeCallback)(char);
 
@@ -152,6 +163,13 @@ volatile long measureHigh[numChannels];     // inputs measured in 'high' state w
 volatile int measureSamples[numChannels];   // how many samples are accumulated in individual channel's input. Since the ADC conversion is driven by interrupt,
 volatile int ledState;                      // the current LED light state; applies to all channels
 volatile int adcConversionCounter;          // number of ADC conversion left for the current input
+volatile short scanInputs[numChannels + ledSlotSize + 1] = { -1 };
+volatile boolean startNextCycle = false;
+volatile boolean scanningDisabled = true;
+
+const int scanInputsCount = (sizeof(scanInputs) / sizeof(scanInputs[0]));
+
+short enabledChannels = 0xff;
 
 int resultLow[numChannels];   // averaged value for 'low' led state
 int resultHigh[numChannels];  // averaged value for 'high' led state
@@ -163,6 +181,7 @@ int calibrationMax = -1;
 // ---------- Variables used by ADC value collecting routing ---------------
 int input;     // the current input number; cycles from 0 to numChannels - 1
 int wasSwitch; // nonzero if input switch happened; discard one ADC reading after the switch
+boolean intrLedState; // copy of the LED state for the interrupt routine
 
 volatile long intCount;     // debug only: the number of ADC interrupts. 
 volatile int readCycles;    // debug only: how many complete read cycles through all the sensors were perfomed since the data collection
@@ -308,6 +327,8 @@ void setup() {
 
   // start from input #0
   input = 0;
+  configureScanInputs();
+  
   sei();
   startAnalogRead(input);
   delay(10);
@@ -328,37 +349,137 @@ void setup() {
 // Interrupt service routine for the ADC completion
 ISR(ADC_vect)
 {
-  int readLo = ADCL; // ADCL must be read first; reading ADCH will trigger next coversion.
-  int readHi = ADCH; 
-  if (wasSwitch) {
-    wasSwitch--;
-    // discard the first reading(s) after input switch. 
-    startAnalogRead(input);
-    return;
-  }
-  intCount++;
-  int v = (readHi << 8) | readLo;
-  if (ledState) {
-    measureHigh[input] += v;
-  } else {
-    measureLow[input] += v;
-  }
-  measureSamples[input]++;
-  
-  if (adcConversionCounter--) {
-    return;
-  }
   // the proper number of conversions passed, advance the input.
-  input = (input + 1) % numChannels;
-  if (input == 0) {
+  int prevInput = scanInputs[input];
+  
+  if (startNextCycle) {
+    initScanCycle();
+    prevInput = -1;
+  } else if (prevInput >= 0) {
+    int readLo = ADCL; // ADCL must be read first; reading ADCH will trigger next coversion.
+    int readHi = ADCH; 
+    if (wasSwitch) {
+      wasSwitch--;
+      // discard the first reading(s) after input switch. 
+      startAnalogRead(prevInput);
+      return;
+    }
+    intCount++;
+    int v = (readHi << 8) | readLo;
+    if (ledState) {
+      measureHigh[prevInput] += v;
+    } else {
+      measureLow[prevInput] += v;
+    }
+    measureSamples[prevInput]++;
+    
+    if (adcConversionCounter--) {
+      return;
+    }
+    input = input + 1;
+  }
+  
+  if ((input >= scanInputsCount) || (scanInputs[input] < 0)) {
+    input = 0;
     readCycles++;
   }
+
+  int nextInput = scanInputs[input];
+
+  changeLeds(prevInput, nextInput);
+  
   wasSwitch = discardMeasuresAfterChange;
-  startAnalogRead(input);
+  // also enables interrupts.
+  if (nextInput >= 0) {
+    scanningDisabled = false;
+    startAnalogRead(nextInput);
+  } else {
+    scanningDisabled = true;
+  }
+}
+
+void initScanCycle() {
+    input = 0;
+    for (short i = 0; i < numChannels; i++) {
+      digitalWrite(digitalOutputs[i], LOW);
+    }
+    intrLedState = ledState;
+}
+
+void changeLeds(int prevInput, int nextInput) {
+  if (debugLow) {
+    Serial.print("prev: "); Serial.print(prevInput); Serial.print(", next: "); Serial.print(nextInput); Serial.print(" input: "); Serial.println(input);
+  }
+  if (nextInput < 0) {
+//    digitalWrite(prevInput, LOW/);
+    return;
+  }
+  short ledNext = digitalOutputs[nextInput];
+  
+  if (prevInput >= 0) {
+    short ledPrev = digitalOutputs[prevInput];
+    if (ledPrev == ledNext) {
+      return;
+    }
+    if (debugLow) {
+      Serial.print("OFF: "); Serial.print(ledPrev);
+    }
+//    digitalWrite(ledPrev, LOW);/
+  }
+  if (debugLow) {
+    Serial.print(" ON: "); Serial.print(ledNext);
+  }
+//  digitalWrite(ledNext, intrLedState ?/ HIGH : LOW);
+  if (debugLow) {
+    Serial.println();
+  }
 }
 
 int errors; // accumulate cases where the samples were read although readCycles was not incremented
 int lastCycle; // last cycle observed by the main loop.
+
+void configureScanInputs() {
+  noInterrupts();
+  int mask = 0x01;
+  int index = 0;
+
+  int alreadyEnabled = 0x00;
+  for (int i = 0; i < numChannels; i++) {
+    boolean en = (enabledChannels & mask) > 0;
+    if (!en) {
+      measureSamples[i] = 0;
+      continue;
+    }
+    if ((alreadyEnabled & (1 << i)) > 0) {
+      continue;
+    }
+    boolean c = true;
+    for (int slot = 0; c && (slot < ledSlotsCount); slot++) {
+      for (int x = 0; c && (x < ledSlotSize); x++) {
+        if (ledSlots[slot][x] == i) {
+
+          for (int cp = 0; cp < ledSlotSize; cp++) {
+            int l = ledSlots[slot][cp];
+            if (l == -1) {
+              break;
+            }
+            scanInputs[index++] = l;
+            alreadyEnabled = (1 << l);
+          }
+          c = false;
+        }
+      }
+    }
+  }
+  scanInputs[index++] = -1;
+  if (debugMgmt) {
+    Serial.print("Scanning channels: ");
+    for (int i = 0; i < scanInputsCount; i++) {
+      Serial.print(scanInputs[i]); Serial.print(", ");
+    }
+    Serial.println();
+  }
+}
 
 int collectADC() {
   int cycles = readCycles - lastCycle;
@@ -371,6 +492,7 @@ int collectADC() {
     return 0;
   }
   noInterrupts(); // prevent the ADC interrupt to fiddle with the longs.
+  
   // compute averages
   if (sometimesDebug) {
     Serial.print(ledState ? "High: " : "Low:  ");
@@ -382,11 +504,12 @@ int collectADC() {
     int count = measureSamples[i];
     long sum = ledState ? measureHigh[i] : measureLow[i];
     int ave = sum / count;  // round up/down
-    (ledState ? resultHigh : resultLow)[i] = ave;
-    if (sometimesDebug) {
-      Serial.print("#"); Serial.print(i); Serial.print(" = "); Serial.print(ave); Serial.print(", ");
+    if (count > 0) {
+      (ledState ? resultHigh : resultLow)[i] = ave;
+      if (sometimesDebug) {
+        Serial.print("#"); Serial.print(i); Serial.print(" = "); Serial.print(ave); Serial.print(", ");
+      }
     }
-
     if (ledState) {
       measureHigh[i] = 0;
     } else {
@@ -395,6 +518,8 @@ int collectADC() {
     measureSamples[i] = 0;
   }
   readCycles = lastCycle = 0;
+//  configureScanInputs();
+//  startNextCycle = true;
   interrupts();
   if (sometimesDebug) {
     Serial.println();
@@ -457,9 +582,6 @@ void switchLEDState() {
     Serial.print(F("Led state was: ")); Serial.println(ledState);
   }
   ledState = ledState ? 0 : 1;
-  for (int i = 0; i < numChannels; i++) {
-    digitalWrite(digitalOutputs[i], ledState ? ledOnValue : ledOffValue);
-  }
   if (sometimesDebug) {
     Serial.print(F("Switched LED ")); Serial.println(ledState);
   }
@@ -713,6 +835,9 @@ void initialLoadEEPROM() {
 
 byte data = 0 ;                   // data byte
 int bitCounter = 0 ;              // bit counter
+short byteIndex = 0;
+
+byte s88BusState[16] = {};
 
 /***************************************************************************
  * Interrupt 0 LOAD.
@@ -733,6 +858,13 @@ void clockInt() {
   // read input
   int x = digitalRead(DATA_IN);
   bitWrite(data, xferBit, (x > 0 ? 1 : 0));
+
+  // if received the whole byte, remember it in the bus state variable.
+  if (xferBit == 7) {
+    if (byteIndex < sizeof(s88BusState)) {
+      s88BusState[byteIndex++] = data;
+    }
+  }
 
   if (debugS88) {
     if ((bitCounter  % 8) == 0 && bitCounter > 7 && data != 0) {
