@@ -33,6 +33,7 @@ void calibrationBlockKeys(char x) {
     exitConfigurationNoReload();
     return;
   }
+  configLastCommand = millis();
   if (x == '\n' || x == '\r') {
     switch (cfgState) {
       case CONFIG_CALIBRATE_LOW:
@@ -44,13 +45,43 @@ void calibrationBlockKeys(char x) {
   }
 }
 
+void printCalibrationStats() {
+  Serial.print(F("Calibrating: "));
+  Serial.print(F("Min = ")); Serial.print(calibrationMin);
+  int cnt = calibrationCount == 0 ? 1 : calibrationCount;
+  Serial.print(F(", \tAvg = ")); Serial.print(calibrationSum / calibrationCount);
+  Serial.print(F(", \tMax = ")); Serial.print(calibrationMax);
+  Serial.print(F("      "));
+  for (short i = 0; i < 100; i++) {
+    Serial.print("\b");
+  }
+  Serial.print("\r");
+}
+
+void commandContinueCalibration() {
+  int channel = nextNumber();
+  if (channel < 1 || channel > numChannels) {
+    Serial.println(F("Bad channel"));
+    return;
+  }
+  long m = millis();
+  if (calibrationSum <= 0 ||
+    ((m - (calibrationStart + calibrationTime)) > 10000)) {
+      Serial.println(F("No preceding CAL found."));
+  }
+  configChannel = channel - 1;
+  terminalCalibration = true;
+  charModeCallback = &calibrationBlockKeys;
+  startCalibrationHigh();  
+}
+
 void commandCalibrate() {
   int channel = nextNumber();
   if (channel < 1 || channel > numChannels) {
     Serial.println(F("Bad channel"));
     return;
   }
-  configChannel = 0; //channel - 1;
+  configChannel = channel - 1;
   terminalCalibration = true;
   charModeCallback = &calibrationBlockKeys;
   startCalibration();  
@@ -85,7 +116,7 @@ void commandDump() {
   for (int i = 0; i < numChannels; i++) {
     int sens = sensorThresholds[i];
     int deb = sensorDebounces[i];
-    Serial.print("SEN:"); Serial.print(i); Serial.print(':'); Serial.print(sens);
+    Serial.print("SEN:"); Serial.print(i + 1); Serial.print(':'); Serial.print(sens);
     if (deb != defaultDebounce) {
       Serial.print(':'); Serial.print(deb);
     }
@@ -138,6 +169,7 @@ void handleMonitor() {
   for (int i = 0; i < sensorStatusLen; i++) {
     Serial.print("\b");
   }
+  Serial.print("\r");
 }
 
 void commandMonitor() {
@@ -152,7 +184,7 @@ void commandMonitor() {
   }
   Serial.println();
   int count = 0;
-  for (int i = 1; i < numChannels; i++) {
+  for (int i = numChannels; i > 0; i--) {
     Serial.print(i % 10);
     Serial.print(' ');
     count +=2 ;

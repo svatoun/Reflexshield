@@ -29,18 +29,23 @@ byte pos = 0;
 boolean ackLedState = false;
 int pulseCount = 0;
 
+boolean isAckRunning() {
+  return blinkPtr != NULL;
+}
+
 void handleAckLed() {
   if (blinkPtr == NULL) {
     return;
   }
   long t = millis();
   long l = t - blinkLastMillis;
+  lastLedSignalled = t;
   if (l < blinkPtr[pos]) {
     return;
   }
   blinkLastMillis = t;
   pos++;
-  if (debugControl) {
+  if (debugLed) {
     Serial.print(F("Next ACK time: ")); Serial.println(blinkPtr[pos]);
   }
   if (blinkPtr[pos] == 0) {
@@ -50,7 +55,7 @@ void handleAckLed() {
       pulseCount--;
       makeLedAck(&blinkShort[0]);
     } else {
-      if (debugControl) {
+      if (debugLed) {
         Serial.println("ACK done");
       }
       blinkPtr = NULL;
@@ -67,14 +72,15 @@ void makeLedAck(const int *  ledSequence) {
     pos = 0;
     ackLedState = 1;
     blinkLastMillis = millis();
+    lastLedSignalled = blinkLastMillis;
     digitalWrite(LED_ACK, HIGH);
-    if (debugControl) {
-      Serial.print(F("LED ACK: ")); Serial.println(blinkPtr[pos]);
+    if (debugLed) {
+      Serial.print(F("LED ACK start: ")); Serial.println(blinkPtr[pos]);
     }
 }
 
 void pulseChannelNumber() {
-  if (debugControl) {
+  if (debugLed) {
     Serial.print(F("ACK channel ID ")); Serial.println(configChannel);
   }
   pulseCount = configChannel;
@@ -174,14 +180,14 @@ void handleButtons() {
 }
 
 void maybeEnterConfiguration() {
-  if (plusLen != -1 || minusLen != -1) {
+  if (minusLen != -1 || (plusLen != -1 && nextLen != -1)) {
     return;
   }
   if (nextLen > resetButtonPress) {
     // reinitialize EEPROM
     resetEEPROM();
     return;
-  } else if (nextLen > configButtonPress) {
+  } else if (plusLen > configButtonPress) {
     if (debugControl) {
       Serial.println("Enter configuration");
     }
@@ -213,6 +219,10 @@ void selectChannel() {
     }
     configChannel--;
   }
+  if (configChannel < 0) {
+    configChannel = 0;
+  }
+  configChannel = configChannel % numChannels;
   if (nextLen > 0 && nextLen < longButtonPress) {
     if (plusLen != -1 || minusLen != -1) {
       return;
@@ -231,7 +241,7 @@ void selectChannel() {
     }
   }
   // cycle around
-  configChannel = configChannel % numChannels;
+  
   if (debugControl) {
     Serial.print(F("Change channel: ")); Serial.println(configChannel);
   }
@@ -279,7 +289,7 @@ void configChannelDebounce() {
       return;
     }
     if (plusLen > configButtonPress) {
-      sensorThresholds[configChannel] = debounceMax;
+      sensorDebounces[configChannel] = debounceMax;
       kind = 2;
     } else if (plusLen > longButtonPress) {
       diff = 100;
@@ -296,7 +306,7 @@ void configChannelDebounce() {
       restoreChannel();
       return;
     } else if (minusLen > configButtonPress) {
-      sensorThresholds[configChannel] = debounceMin;
+      sensorDebounces[configChannel] = debounceMin;
       kind = 2;
     } else if (minusLen > longButtonPress) {
       diff = -100;
@@ -360,7 +370,7 @@ int emptyLow;
 boolean terminalConfirm = false;
 
 void startCalibration() {
-  Serial.print(F("Calibrating sensor #")); Serial.println(configChannel + 1);
+  Serial.print(F("Calibrating sensor #")); Serial.print(configChannel + 1); Serial.println(F("Measuing data on CLEAR"));
   cfgState = CONFIG_CALIBRATE_LOW;
   makeLedAck(&blinkCalibrateLow[0]);
   setupCalibration();
@@ -369,8 +379,22 @@ void startCalibration() {
 void setupCalibration() {
   calibrationMax = -1;
   calibrationMin = 1000;
+  calibrationSum = 0;
+  calibrationCount = 0;
+  calibrationStart = millis();
+  configLastCommand = calibrationStart;
+  terminalConfirm = false;
+  if (debugControl) {
+    Serial.println("Calibration started");
+  }
+}
+
+void startCalibrationHigh() {
+  // leave min/max from the preceding attempt.
+  cfgState = CONFIG_CALIBRATE_HIGH;
   calibrationStart = millis();
   terminalConfirm = false;
+  makeLedAck(&blinkCalibrateCont[0]);
   if (debugControl) {
     Serial.println("Calibration started");
   }
@@ -388,7 +412,7 @@ void handleCalibration() {
         calibrationStart = -1;
         emptyHigh = calibrationMax;
         emptyLow = calibrationMin;
-        Serial.print(F("Calibration: empty read, low = ")); Serial.print(emptyLow); Serial.print(F(", high = ")); Serial.println(emptyHigh);
+        Serial.print(F("\nCalibration: empty read, low = ")); Serial.print(emptyLow); Serial.print(F(", high = ")); Serial.println(emptyHigh);
         Serial.println(F("Empty calibration complete, cover sensor and press ENTER to calibrate obstacle"));
       }
       return;
@@ -399,7 +423,7 @@ void handleCalibration() {
         makeLedAck(&blinkCalibrateEnd[0]);
         calibrationStart = -1;
         computeSensitivity();
-        Serial.println(F("Calibration complete"));
+        Serial.println(F("\ndCalibration complete"));
         if (terminalCalibration) {
           cfgState = CONFIG_NONE;
           resetTerminal();
@@ -488,10 +512,10 @@ void configChannelSense() {
       sensorThresholds[configChannel] = senseMax;
       kind = 2;
     } else if (plusLen > longButtonPress) {
-      diff = -20;
+      diff = 20;
       kind = 1;
     } else {
-      diff = -1;
+      diff = 1;
     }
   }
   if (minusLen > 0) {
@@ -505,10 +529,10 @@ void configChannelSense() {
       sensorThresholds[configChannel] = senseMin;
       kind = 2;
     } else if (minusLen > longButtonPress) {
-      diff = 20;
+      diff = -20;
       kind = 1;
     } else {
-      diff = 1;
+      diff = -1;
     }
   }
   if (diff != 0) {
@@ -568,6 +592,7 @@ void interpretButtons() {
     return;
   }
   if ((cfgState != CONFIG_NONE) && (nextLen > configButtonPress) && (plusLen == -1) && (minusLen == -1)) {
+    Serial.print("Exiting config. "); Serial.print("cfgState:"); Serial.print(cfgState); Serial.print("nextLen"); Serial.print(nextLen);
     exitConfiguration();
     return;
   }
