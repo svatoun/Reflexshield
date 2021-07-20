@@ -92,13 +92,8 @@ void restoreChannel() {
   if (debugControl) {
     Serial.print(F("Reset to default channel ")); Serial.println(configChannel);
   }
-  int eeAddr = eepromThresholdBase + 2 * configChannel;
-  int v = EEPROM.read(eeAddr) + (EEPROM.read(eeAddr) << 8);
-  sensorThresholds[configChannel] = v;
-
-  eeAddr = eepromDebounceBase + 2 * configChannel;
-  v = EEPROM.read(eeAddr) + (EEPROM.read(eeAddr) << 8);
-  sensorDebounces[configChannel] = v;
+  int eeAddr = eepromThresholdBase + 1 /* magic */ + sizeof(attachedSensors[0]) * configChannel;
+  eeBlockRead2(eeAddr, &attachedSensors[configChannel], sizeof(attachedSensors[0]));
   makeLedAck(&blinkThrice[0]);
 }
 
@@ -108,6 +103,9 @@ void resetButtons() {
 }
 
 void handleButtons() {
+  if (relaysPresent || outputExtensionAttached) {
+    return;
+  }
   plusButton.update();
   minusButton.update();
   nextButton.update();
@@ -282,6 +280,12 @@ void configChannelDebounce() {
     }
   }
 
+  if (configChannel < 0 || configChannel >= numChannels) {
+    return;
+  }
+
+  AttachedSensor& as = attachedSensors[configChannel];
+
   int kind = 0;
   int diff = 0;
   if (plusLen > 0) {
@@ -289,7 +293,7 @@ void configChannelDebounce() {
       return;
     }
     if (plusLen > configButtonPress) {
-      sensorDebounces[configChannel] = debounceMax;
+      as.debounce = debounceMax;
       kind = 2;
     } else if (plusLen > longButtonPress) {
       diff = 100;
@@ -306,7 +310,7 @@ void configChannelDebounce() {
       restoreChannel();
       return;
     } else if (minusLen > configButtonPress) {
-      sensorDebounces[configChannel] = debounceMin;
+      as.debounce = debounceMin;
       kind = 2;
     } else if (minusLen > longButtonPress) {
       diff = -100;
@@ -316,7 +320,7 @@ void configChannelDebounce() {
     }
   }
   if (diff != 0) {
-    int v = sensorDebounces[configChannel] + diff;
+    int v = as.debounce + diff;
     int nv = v;
     if (v > debounceMax) {
       nv = debounceMax;
@@ -332,10 +336,10 @@ void configChannelDebounce() {
     } else {
       makeLedAck(&blinkTwice[0]);
     }
-    sensorDebounces[configChannel] = nv;
+    as.debounce = nv;
   } else if (kind == 2) {
     if (debugControl) {
-      Serial.print(F("Sense reset to min/max: ")); Serial.print(sensorDebounces[configChannel]);
+      Serial.print(F("Sense reset to min/max: ")); Serial.print(as.debounce);
     }
     makeLedAck(&blinkThrice[0]);
   }
@@ -344,7 +348,7 @@ void configChannelDebounce() {
 void endCalibrateSensitivity() {
   int diff = calibrationMax - calibrationMin;
   int bottom = (calibrationMin + (diff * 15) / 100);    // add 15% to low
-  sensorThresholds[configChannel] = bottom;
+  attachedSensors[configChannel].threshold = bottom;
   makeLedAck(&blinkThrice[0]);
 }
 
@@ -445,7 +449,7 @@ void handleCalibration() {
           if (debounceTime > 1000) {
             debounceTime = 1000;
           }
-          sensorDebounces[configChannel] = debounceTime;
+          attachedSensors[configChannel].debounce = debounceTime;
           Serial.print(F("Debounce calibration complete. Set to "));   Serial.println(debounceTime);
           if (terminalCalibration) {
             resetTerminal();
@@ -465,7 +469,7 @@ void computeSensitivity() {
    Serial.print(F("Occupied from: ")); Serial.print(c); Serial.print(F(", empty max: ")); Serial.println(m);
    int v = max(c, m);
    Serial.print(F("Sensor threshold: ")); Serial.println(v);
-   sensorThresholds[configChannel] = v;
+   attachedSensors[configChannel].threshold = v;
 }
 
 /**
@@ -501,6 +505,8 @@ void configChannelSense() {
       return;
     }
   }
+
+  AttachedSensor& sen = attachedSensors[configChannel];
   
   int kind = 0;
   int diff = 0;
@@ -509,7 +515,7 @@ void configChannelSense() {
       return;
     }
     if (plusLen > configButtonPress) {
-      sensorThresholds[configChannel] = senseMax;
+      sen.threshold = senseMax;
       kind = 2;
     } else if (plusLen > longButtonPress) {
       diff = 20;
@@ -526,7 +532,7 @@ void configChannelSense() {
       restoreChannel();
       return;
     } else if (minusLen > configButtonPress) {
-      sensorThresholds[configChannel] = senseMin;
+      sen.threshold = senseMin;
       kind = 2;
     } else if (minusLen > longButtonPress) {
       diff = -20;
@@ -536,7 +542,7 @@ void configChannelSense() {
     }
   }
   if (diff != 0) {
-    int v = sensorThresholds[configChannel] + diff;
+    int v = sen.threshold + diff;
     int nv = v;
     if (v > senseMax) {
       nv = senseMax;
@@ -552,10 +558,10 @@ void configChannelSense() {
     } else {
       makeLedAck(&blinkTwice[0]);
     }
-    sensorThresholds[configChannel] = nv;
+    sen.threshold = nv;
   } else if (kind == 2) {
     if (debugControl) {
-      Serial.print(F("Sense reset to min/max: ")); Serial.print(sensorThresholds[configChannel]);
+      Serial.print(F("Sense reset to min/max: ")); Serial.print(sen.threshold);
     }
     makeLedAck(&blinkThrice[0]);
   }
