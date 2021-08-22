@@ -128,9 +128,9 @@ const int discardMeasuresAfterChange = 3; // how many ADC readings should be dis
 const int analogInputs[] = { A0, A1, A2, A3, A4, A5, A6, A7 };
 
 // LEDs for individual detectors. Controlled in chunks defined in ledSlots below.
-const int digitalOutputs[] = { 12, 12, 11, 11, 9, 9, 10, 10};
+const byte digitalOutputs[] = { 12, 12, 11, 11, 9, 9, 10, 10};
 const int eepromThresholdBase = 0x00;
-const int eepromVirtualBase = 0x50;
+const int eepromVirtualBase = 0x60;
 const int eepromRelayBase = 0xb0;
 const int eepromChecksum = 0xf0;
 
@@ -138,7 +138,7 @@ const int ledSlotsCount = 4;
 const int ledSlotSize = 2;
 
 // Chunks of LEDs controlled by individual outputs, must be consistent with digitalOutputs
-const short ledSlots[ledSlotsCount][ledSlotSize] = {
+const byte ledSlots[ledSlotsCount][ledSlotSize] = {
   { 0, 1 },
   { 2, 3 },
   { 4, 5 },
@@ -167,14 +167,14 @@ int virtualSensorDefaultDelay = 0x00;
 struct AttachedSensor {
   short threshold;
   short debounce;
-  short occupiedReduction;
 
   short fadeOnTime;
   short fadeOffTime;
 
+  byte  occupiedReduction : 7;
   boolean invert : 1;
 
-  AttachedSensor() : threshold(defaultThreshold), debounce(defaultDebounce), fadeOnTime(0), fadeOffTime(0), occupiedReduction(occupiedThresholdReduction), invert(false) {}
+  AttachedSensor() : threshold(defaultThreshold), debounce(defaultDebounce), fadeOnTime(0), fadeOffTime(0), occupiedReduction(0), invert(false) {}
 };
 
 struct VirtualSensor {
@@ -454,6 +454,8 @@ void setup() {
   registerLineCommand("S8L", &commandS88Load);
   registerLineCommand("S8D", &commandS88Data);
   registerLineCommand("S8T", &commandS88Tick);
+
+  registerLineCommand("MSR", &commandMeasure);
 
   registerLineCommand("REL", &commandRelay);
 
@@ -934,7 +936,7 @@ void handleSignalLed() {
 
 
 void loop() {
-  if (cfgState == CONFIG_NONE) {
+  if (cfgState == CONFIG_NONE && charModeCallback == NULL) {
     configChannel = -1;
   }
   sometimesDebug = 0;
@@ -972,6 +974,7 @@ void loop() {
   handleAckLed();
   handleCalibration();
   handleMonitor();
+  handleMeasure();
   processVirtualSensorInputs();
   fadeOffVirtualSensors();
   processRelays();
@@ -1036,12 +1039,21 @@ void initialLoadEEPROM() {
 
   int eeAddr = eepromThresholdBase;
   allOK = eeBlockRead(0xad, eeAddr, &attachedSensors[0], sizeof(attachedSensors));
+  if (!allOK) {
+    Serial.println("Attached sensors bad");
+  }
 
   eeAddr = eepromVirtualBase;
   allOK &= eeBlockRead(0xaa, eeAddr, &virtualSensors[0], sizeof(virtualSensors));
+  if (!allOK) {
+    Serial.println("Virtual sensors bad");
+  }
 
   eeAddr = eepromRelayBase;
   allOK &= eeBlockRead(0xaf, eeAddr, &relays[0], sizeof(relays));
+  if (!allOK) {
+    Serial.println("Relay bad");
+  }
 
   if (!allOK) {
     Serial.print(F("EEPROM checksum does not match: "));

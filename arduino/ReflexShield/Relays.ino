@@ -4,6 +4,12 @@
 Relay relays[maxRelays];
 RelayState relayStates[maxRelays];
 
+void clearRelays() {
+  for (int i = 0; i < maxRelays; i++) {
+    relays[i] = Relay();
+  }
+}
+
 boolean isRelayDefined(const Relay& r) {
   return r.sensorA > 0 || r.sensorB > 0 || r.sensorC > 0;
 }
@@ -18,15 +24,20 @@ boolean atLeastOneRelayConnected() {
 }
 
 void initRelays() {
+  if (!atLeastOneRelayConnected) {
+    return;
+  }
   for (int i = 0; i < maxRelays; i++) {
+    pinMode(relayPorts[i], OUTPUT);
     if (isRelayDefined(relays[i])) {
-      pinMode(relayPorts[i], OUTPUT);
       boolean x = (relayStates[i].state == relays[i].onValue) ? HIGH : LOW;
       Serial.print(F("Init relay ")); Serial.print(i + 1); Serial.print(F(" to ")); Serial.println(x);
       digitalWrite(relayPorts[i], x);
       relayStates[i].offTimeout = 0;
 
       relaysPresent = true;
+    } else {
+      digitalWrite(relayPorts[i], LOW);
     }
   }
 }
@@ -49,13 +60,13 @@ void commandRelay() {
     }
   }
   
+  int sen = -1;
+  int offDelay = -1;
+  boolean state = true;
   while (*inputPos != 0) {
     if (*(inputPos + 1) != '=') {
         break;
     }
-    int sen = -1;
-    int offDelay = -1;
-    boolean state = true;
     switch (*inputPos) {
       case 'a': case 'b': case 'c':
       case 'A': case 'B': case 'C':
@@ -87,19 +98,11 @@ void commandRelay() {
           case '+': case '1':
             state = true;
             break;
-          case '=':
-            if (*(inputPos + 1) == '0') {
-              state = false;
-              break;
-            } else if (*(inputPos + 1) == '1') {
-              state = true;
-              break;
-            }
-            // fall through
           default:
             Serial.println(F("Invalid state"));
             return;
         }
+        inputPos++;
         rcopy.onValue = state;
         break;
       default:
@@ -124,6 +127,7 @@ void commandRelay() {
   r = rcopy;
   Serial.println(F("Relay defined:"));
   dumpRelay(rel - 1, r);
+  Serial.println();
 }
 
 void dumpRelay(int index, const Relay& r) {
