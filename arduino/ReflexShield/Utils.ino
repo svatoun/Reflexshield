@@ -41,7 +41,7 @@ int readEepromInt(int &addr, int& checksum, boolean& allzero) {
 */
 void eeBlockWrite(byte magic, int eeaddr, const void* address, int size) {
   if (debugControl) {
-    Serial.print(F("Writing EEPROM ")); Serial.print(eeaddr, HEX); Serial.print(F(":")); Serial.print(size); Serial.print(F(", source: ")); Serial.println((int)address, HEX);
+    Serial.print(F("Writing EEPROM ")); Serial.print(eeaddr, HEX); Serial.print('-'); Serial.print(eeaddr + size - 1, HEX); Serial.print(F(":")); Serial.print(size);  Serial.print(F(", source: ")); Serial.println((int)address, HEX);
   }
   const byte *ptr = (const byte*) address;
   byte hash = magic;

@@ -166,7 +166,7 @@ void printSensorDef(int i, const AttachedSensor& as) {
       Serial.print("SFT:"); Serial.print(as.fadeOnTime); Serial.print(':'); Serial.println(as.fadeOffTime);
     }
     if (as.occupiedReduction > 0) {
-      Serial.print("OTR:"); Serial.print(as.occupiedReduction); 
+      Serial.print("OTR:"); Serial.println(as.occupiedReduction); 
     }
 }
 
@@ -323,6 +323,53 @@ void refreshSensorCount() {
   } else {
     virtualSensorCount = 0;
   }
+}
+
+void measureCallback(char c) {
+  switch (c) {
+    case '\n':
+      Serial.println("\n\n");
+      break;
+    case 'q':
+      Serial.println(F("\nMeasurement stopped.\n"));
+      configChannel = -1;
+      resetTerminal();
+      break;
+    case 'r':
+      resetCalibrationStats();
+      break;     
+  }
+}
+
+void print3(int val) {
+  if (val < 99) {
+    Serial.print('0');
+  }
+  Serial.print(val);
+}
+
+void handleMeasure() {
+  if (charModeCallback != &measureCallback) {
+    return;
+  }
+  Serial.print('\r');
+  Serial.print(configChannel + 1); 
+  Serial.print(", high="); print3(resultHigh[configChannel]);
+  Serial.print(", low="); print3(resultLow[configChannel]);
+  Serial.print(", min="); print3(calibrationMin);
+  Serial.print(", max="); print3(calibrationMax);
+  Serial.print(", avg="); print3(calibrationCount == 0 ? 0 : calibrationSum / calibrationCount);
+}
+
+void commandMeasure() {
+  int channel = nextNumber();
+  if (channel < 1 || channel > numChannels) {
+    Serial.println(F("Bad channel"));
+    return;
+  }
+  configChannel = channel - 1;
+  charModeCallback = &measureCallback;
+  resetCalibrationStats();
 }
 
 void commandVirtualSensor() {

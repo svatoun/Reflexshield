@@ -374,18 +374,22 @@ int emptyLow;
 boolean terminalConfirm = false;
 
 void startCalibration() {
-  Serial.print(F("Calibrating sensor #")); Serial.print(configChannel + 1); Serial.println(F("Measuing data on CLEAR"));
+  Serial.print(F("Calibrating sensor #")); Serial.print(configChannel + 1); Serial.println(F(": Measuring data on CLEAR"));
   cfgState = CONFIG_CALIBRATE_LOW;
   makeLedAck(&blinkCalibrateLow[0]);
   setupCalibration();
 }
 
-void setupCalibration() {
-  calibrationMax = -1;
-  calibrationMin = 1000;
+void resetCalibrationStats() {
+  calibrationMax = 0;
+  calibrationMin = 999;
   calibrationSum = 0;
   calibrationCount = 0;
   calibrationStart = millis();
+}
+
+void setupCalibration() {
+  resetCalibrationStats();
   configLastCommand = calibrationStart;
   terminalConfirm = false;
   if (debugControl) {
