@@ -327,8 +327,10 @@ void refreshSensorCount() {
 
 void measureCallback(char c) {
   switch (c) {
+    case '\r':
     case '\n':
       Serial.println("\n\n");
+      resetCalibrationStats();
       break;
     case 'q':
       Serial.println(F("\nMeasurement stopped.\n"));
@@ -342,7 +344,10 @@ void measureCallback(char c) {
 }
 
 void print3(int val) {
-  if (val < 99) {
+  if (val <= 9) {
+    Serial.print('0');
+  }
+  if (val <= 99) {
     Serial.print('0');
   }
   Serial.print(val);
@@ -354,11 +359,12 @@ void handleMeasure() {
   }
   Serial.print('\r');
   Serial.print(configChannel + 1); 
-  Serial.print(", high="); print3(resultHigh[configChannel]);
-  Serial.print(", low="); print3(resultLow[configChannel]);
-  Serial.print(", min="); print3(calibrationMin);
-  Serial.print(", max="); print3(calibrationMax);
-  Serial.print(", avg="); print3(calibrationCount == 0 ? 0 : calibrationSum / calibrationCount);
+  Serial.print(F(": high=")); print3(resultHigh[configChannel]);
+  Serial.print(F(", low=")); print3(resultLow[configChannel]);
+  Serial.print(F(", min=")); print3(calibrationMin);
+  Serial.print(F(", max=")); print3(calibrationMax);
+  Serial.print(F(", avg=")); print3(calibrationCount == 0 ? 0 : calibrationSum / calibrationCount);
+  Serial.print(F("      "));
 }
 
 void commandMeasure() {

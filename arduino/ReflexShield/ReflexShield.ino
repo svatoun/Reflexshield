@@ -114,7 +114,7 @@ const int LED_ACK         = 13;       // ACK LED
 
 const int reportS88Loss = 1;          // will flash LED if S88 CLK signal is not present
 
-const int inputADCConversions = 5;  // how many ADC conversions is done on a particular input before moving to the next one
+const int inputADCConversions = 6;  // how many ADC conversions is done on a particular input before moving to the next one
 const int sampleMillis = 7;         // Milliseconds between ADC collections
 const int measureInterval = 53;     // Interval for measuring sensor inputs to produce yes/no occupation result
 
@@ -123,7 +123,7 @@ const int senseMin = 100;           // maximum sensitivity
 
 const int debounceMin = 10;
 const int debounceMax = 1000;
-const int discardMeasuresAfterChange = 3; // how many ADC readings should be discarded after input channel change; this is instead of delay :) One reading = 104 usec.
+const int discardMeasuresAfterChange = 8; // how many ADC readings should be discarded after input channel change; this is instead of delay :) One reading = 104 usec.
 
 const int analogInputs[] = { A0, A1, A2, A3, A4, A5, A6, A7 };
 
@@ -179,9 +179,14 @@ struct AttachedSensor {
 
 struct VirtualSensor {
   static const VirtualSensor NONE;
+  static const int defaultSensorDelay = 500;  // default delay in ms
 
   unsigned short monitoredId = 0;
   unsigned short sensorDelay = 0;
+
+  int getSensorDelay() const {
+    return sensorDelay > 0 ? sensorDelay : defaultSensorDelay;
+  }
 
   VirtualSensor() : VirtualSensor(0, 0) {}
   VirtualSensor(short monitored, short delay) : monitoredId(0), sensorDelay(0) {}
@@ -701,9 +706,9 @@ void updateSensorCounters() {
       thr = (int)(((long)comp * red) / 100);
     }
     /*
-    if (x == 2) {
+      if (x == 2) {
       Serial.print("Thr: "); Serial.print(thr); Serial.print(", diff: "); Serial.println(diff);
-    }
+      }
     */
 
     if (diff > thr) {
@@ -712,7 +717,7 @@ void updateSensorCounters() {
     } else {
       sensorCounters[x]--;
     }
-    if (sometimesDebug && debugSensors) {
+    if (x == 1 || (sometimesDebug && debugSensors)) {
       Serial.print(F("C-")); Serial.print(x);
       Serial.print(F(", Low = ")); Serial.print(resultLow[x]);
       Serial.print(F(", High = ")); Serial.print(resultHigh[x]);
@@ -744,6 +749,10 @@ long configSensorDebounce = 0;
 // Sets detected sensor state. First goes to the 'internal' state. Then, possibly after a delay
 // propagates into S88.
 void setDetectedSensorBit(int sensor, boolean state) {
+  if (sensor >= numChannels) {
+    return;
+  }
+  const AttachedSensor& sen = attachedSensors[sensor];
   int v = 1 << sensor;
   if ((sensorOverrides & v) > 0) {
     return;
@@ -759,6 +768,10 @@ void setDetectedSensorBit(int sensor, boolean state) {
     internalSensorStateBits &= ~v;
   }
 
+  if (sen.invert) {
+    state = !state;
+  }
+
   if (((sensorStateBits & v) > 0) == (state > 0)) {
     // no visible change -> reset the fade tiemout
     sensorFadeTimeout[sensor] = 0;
@@ -767,9 +780,11 @@ void setDetectedSensorBit(int sensor, boolean state) {
   const AttachedSensor &as = attachedSensors[sensor];
   short tm = state ? as.fadeOnTime : as.fadeOffTime;
   if (tm > 0) {
+    Serial.print("Sensor "); Serial.print(sensor + 1); Serial.print(" state "); Serial.print(state); Serial.print(" delay "); Serial.println(tm);
     sensorFadeTimeout[sensor] = curMillis + tm;
     return;
   }
+  Serial.print("Sensor "); Serial.print(sensor + 1); Serial.print(" changed "); Serial.println(state);
   if (state) {
     sensorStateBits |= v;
   } else {
@@ -782,11 +797,15 @@ void delayedSensorChanges() {
   for (int i = 0; i < numChannels; i++) {
     long tt = sensorFadeTimeout[i];
     if (tt > 0 && tt < curMillis) {
+      const AttachedSensor& sen = attachedSensors[i];
       sensorFadeTimeout[i] = 0;
 
       int v = (1 << i);
       boolean state = (internalSensorStateBits & v) > 0;
-
+      if (sen.invert) {
+        state = !state;
+      }
+      Serial.print("Delayed Sensor "); Serial.print(i + 1); Serial.print(" changed "); Serial.println(state);
       if (state) {
         sensorStateBits |= v;
       } else {
@@ -841,10 +860,10 @@ long lastUpdateMillis = 0;
 void updateSensorBits() {
   long t = millis();
   /*
-  if (lastUpdateMillis > 0) {
+    if (lastUpdateMillis > 0) {
     Serial.print("Update delay: "); Serial.println((t - lastUpdateMillis));
-  }
-  lastUpdateMillis = t;
+    }
+    lastUpdateMillis = t;
   */
   byte result = 0;
   noInterrupts();
@@ -853,13 +872,11 @@ void updateSensorBits() {
     const AttachedSensor& sen = attachedSensors[i];
 
     int v = 1 << i;
-    boolean invertedSensor = sen.invert;
-    boolean litValue = !invertedSensor;
     boolean lastBit = (lastState & (1 << i)) > 0;
-    boolean vb = !litValue;
+    boolean vb = false;
 
     if (sensorCounters[i] > counterThreshold) {
-      vb = litValue;
+      vb = true;
       sensorLastUp[i] = t;
     } else {
       if (lastBit) {
@@ -876,8 +893,9 @@ void updateSensorBits() {
           if (sometimesDebug) {
             Serial.print(F("Sensor debounced: ")); Serial.print(i); Serial.print(F(", time left: ")); Serial.println(t - sensorLastUp[i]);
           }
-          vb = litValue;
+          vb = true;
         }
+        Serial.print("Sensor off from up: "); Serial.println(diff);
       }
     }
     sensorCounters[i] = 0;
@@ -918,7 +936,7 @@ void handleSignalLed() {
         }
       }
     }
-    if (internalSensorStateBits > 0) {
+    if (sensorStateBits > 0) {
       digitalWrite(LED_SIGNAL, HIGH);
     } else {
       digitalWrite(LED_SIGNAL, LOW);
