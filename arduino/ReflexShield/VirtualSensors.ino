@@ -65,7 +65,7 @@ void updateVirtualSensor(int vIndex) {
     if (debugVirtual) {
       Serial.println(F("Virtual timeout reset"));
     }
-    ss.fadeOnTime = t + sens.sensorDelay;
+    ss.fadeOnTime = t + sens.getSensorDelay();
     ss.fadeOffTime = 0;
   } else {
     if (t > ss.fadeOnTime) {

@@ -50,14 +50,12 @@ void commandRelay() {
   }
   Relay rcopy = relays[rel - 1];
   char c = 0;
-  if ((*inputPos != 0) && (*(inputPos + 1) != '=')) {
-    if (*inputPos == '0') {
-      relays[rel - 1] = Relay();
-      relayStates[rel - 1] = RelayState();
-      initRelays();
-      Serial.print(F("Relay ")); Serial.print(rel); Serial.println(F(" erased."));
-      return;
-    }
+  if (*inputPos == '0') {
+    relays[rel - 1] = Relay();
+    relayStates[rel - 1] = RelayState();
+    initRelays();
+    Serial.print(F("Relay ")); Serial.print(rel); Serial.println(F(" erased."));
+    return;
   }
   
   int sen = -1;

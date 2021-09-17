@@ -39,6 +39,7 @@ int readEepromInt(int &addr, int& checksum, boolean& allzero) {
 /**
    Writes a block of data into the EEPROM, followed by a checksum
 */
+const boolean debugEEPROM = false;
 void eeBlockWrite(byte magic, int eeaddr, const void* address, int size) {
   if (debugControl) {
     Serial.print(F("Writing EEPROM ")); Serial.print(eeaddr, HEX); Serial.print('-'); Serial.print(eeaddr + size - 1, HEX); Serial.print(F(":")); Serial.print(size);  Serial.print(F(", source: ")); Serial.println((int)address, HEX);
@@ -46,15 +47,25 @@ void eeBlockWrite(byte magic, int eeaddr, const void* address, int size) {
   const byte *ptr = (const byte*) address;
   byte hash = magic;
   EEPROM.write(eeaddr, magic);
+  if (debugControl) {
+    Serial.print(F("magic:")); Serial.println(magic, HEX);
+  }
   eeaddr++;
   for (; size > 0; size--) {
     byte b = *ptr;
     EEPROM.write(eeaddr, b);
+    if (debugEEPROM) {
+      Serial.print(b, HEX);
+    }
     ptr++;
     eeaddr++;
     hash = hash ^ b;
   }
   EEPROM.write(eeaddr, hash);
+  if (debugEEPROM) {
+    Serial.println();
+    Serial.print(F("Checksum: ")); Serial.println(hash, HEX); Serial.println();
+  }
 }
 
 void eeBlockRead2(int eeaddr, void* address, int size) {
@@ -66,6 +77,9 @@ void eeBlockRead2(int eeaddr, void* address, int size) {
   byte *ptr = (byte*) address;
   for (int i = 0; i < size; i++, a++) {
     x = EEPROM.read(a);
+    if (debugEEPROM) {
+      Serial.print(x, HEX);
+    }
     *ptr = x;
     ptr++;
   }
@@ -89,12 +103,22 @@ boolean eeBlockRead(byte magic, int eeaddr, void* address, int size) {
     }
     return false;
   }
+  if (debugEEPROM) {
+    Serial.print(F("magic:")); Serial.println(x, HEX);
+  }
   a++;
   for (int i = 0; i < size; i++, a++) {
     x = EEPROM.read(a);
+    if (debugEEPROM) {
+      Serial.print(x, HEX);
+    }
     hash = hash ^ x;
   }
   x = EEPROM.read(a);
+  if (debugEEPROM) {
+    Serial.println();
+    Serial.print(F("Computed checksum: ")); Serial.println(hash, HEX); Serial.print(F("  read checksum: ")); Serial.println(x, HEX);
+  }
   if (hash != x) {
     if (debugControl) {
       Serial.println(F("Checksum does not match"));
@@ -109,4 +133,5 @@ boolean eeBlockRead(byte magic, int eeaddr, void* address, int size) {
     *ptr = x;
     ptr++;
   }
+  return true;
 }
