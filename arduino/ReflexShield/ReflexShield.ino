@@ -1,6 +1,8 @@
 /**
    Copyright (c) 2016, 2020, svatopluk.dedic@gmail.com
 
+   Versiom 3.0.x
+
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License
    as published by the Free Software Foundation; either version 2
@@ -20,7 +22,7 @@
    above threshold the sensor is probably receiving reflected IR LED's light so it is detecting a vehicle above it.
 
    A "match counter" is kept for each sensor. Match counter increases when the sensor is detecting the correct LED phase,
- * *decreases* if not. So fluctuations quickly decrease the match counter towards zero, while for detection to
+   *decreases* if not. So fluctuations quickly decrease the match counter towards zero, while for detection to
    be reported, the match counter must accumulate several subsequent positives.
 
    After some defined period of time, the match counters are processed into occupancy detection bits and stored for
@@ -39,6 +41,8 @@
    The main loop waits for "sampleMillis" milliseconds (default = 7), then evaluates "measureHigh" and "measureLow"
    (recorded in ADC ISR) - computes an average value, stores in "resultHigh" or "resultLow". When IR LED is on
    (= the second measurement phase), match counters are computed for each sensor.
+
+   Ver 3.0: Virtual sensors added. Measure command added.
 
    Ver 1.1: In order to reduce power consumption (initially: 40mA * 8 LEDs = 0,32A !! per detector board), the board
    was changed to light just 2 leds at a time, through ULN2003 transistor array. 4 sensors are read during each cycle:
@@ -123,7 +127,7 @@ const int senseMin = 100;           // maximum sensitivity
 
 const int debounceMin = 10;
 const int debounceMax = 1000;
-const int discardMeasuresAfterChange = 8; // how many ADC readings should be discarded after input channel change; this is instead of delay :) One reading = 104 usec.
+const int discardMeasuresAfterChange = 5; // how many ADC readings should be discarded after input channel change; this is instead of delay :) One reading = 104 usec.
 
 const int analogInputs[] = { A0, A1, A2, A3, A4, A5, A6, A7 };
 
@@ -238,11 +242,9 @@ volatile long measureHigh[numChannels];     // inputs measured in 'high' state w
 volatile int measureSamples[numChannels];   // how many samples are accumulated in individual channel's input. Since the ADC conversion is driven by interrupt,
 volatile boolean ledState;                      // the current LED light state; applies to all channels
 volatile int adcConversionCounter;          // number of ADC conversion left for the current input
-volatile short scanInputs[numChannels + ledSlotSize + 1] = { -1 };
 volatile boolean startNextCycle = false;
 volatile boolean scanningDisabled = true;
 
-const int scanInputsCount = (sizeof(scanInputs) / sizeof(scanInputs[0]));
 
 short enabledChannels = 0xff;
 boolean outputExtensionAttached = false;
@@ -432,7 +434,6 @@ void setup() {
 
   // start from input #0
   input = 0;
-  configureScanInputs();
 
   sei();
   startAnalogRead(input);
@@ -464,6 +465,7 @@ void setup() {
 
   registerLineCommand("REL", &commandRelay);
 
+  initSensors();
   initRelays();
 }
 
@@ -504,12 +506,12 @@ ISR(ADC_vect)
     input = input + 1;
   }
 
-  if ((input >= scanInputsCount) || (scanInputs[input] < 0)) {
+  if ((input >= numChannels) || (analogInputs[input] < 0)) {
     input = 0;
     readCycles++;
   }
 
-  int nextInput = scanInputs[input];
+  int nextInput = input;
   changeLeds(prevInput, nextInput);
   if (nextInput >= 0) {
     scanningDisabled = false;
@@ -527,6 +529,7 @@ ISR(ADC_vect)
   }
 }
 
+// initialize the round-robin, turn off all LEDs
 void initScanCycle() {
   if (debugLow) {
     Serial.println("* new scan cycle");
@@ -534,8 +537,15 @@ void initScanCycle() {
   input = 0;
   intrLedState = ledState;
   wasSwitch = discardMeasuresAfterChange;
+  for (int i = 0; i < sizeof(digitalOutputs) / sizeof(digitalOutputs[i]); i++) {
+    int o = digitalOutputs[i];
+    digitalWrite(o, LOW);
+  }
+  prevInput = -1;
 }
 
+// turn off old LED, if prevInput is defined. Turn on (if it should be on) new LED.
+// do not turn off/on if the LED does not change from prev input to next
 void changeLeds(int prevInput, int nextInput) {
   if (debugLed) {
     Serial.print("prev: "); Serial.print(prevInput); Serial.print(", next: "); Serial.print(nextInput); Serial.print(" input: "); Serial.println(input);
@@ -577,49 +587,6 @@ void changeLeds(int prevInput, int nextInput) {
 int errors; // accumulate cases where the samples were read although readCycles was not incremented
 int lastCycle; // last cycle observed by the main loop.
 
-// must be called with interrupts disabled !
-void configureScanInputs() {
-  int mask = 0x01;
-  int index = 0;
-
-  int alreadyEnabled = 0x00;
-  for (int i = 0; i < numChannels; i++) {
-    boolean en = (enabledChannels & mask) > 0;
-    if (!en) {
-      measureSamples[i] = 0;
-      continue;
-    }
-    if ((alreadyEnabled & (1 << i)) > 0) {
-      continue;
-    }
-    boolean c = true;
-    for (int slot = 0; c && (slot < ledSlotsCount); slot++) {
-      for (int x = 0; c && (x < ledSlotSize); x++) {
-        if (ledSlots[slot][x] == i) {
-
-          for (int cp = 0; cp < ledSlotSize; cp++) {
-            int l = ledSlots[slot][cp];
-            if (l == -1) {
-              break;
-            }
-            scanInputs[index++] = l;
-            alreadyEnabled = (1 << l);
-          }
-          c = false;
-        }
-      }
-    }
-  }
-  scanInputs[index++] = -1;
-  if (debugMgmt) {
-    Serial.print("Scanning channels: ");
-    for (int i = 0; i < scanInputsCount; i++) {
-      Serial.print(scanInputs[i]); Serial.print(", ");
-    }
-    Serial.println();
-  }
-}
-
 int collectADC() {
   int cycles = readCycles - lastCycle;
   lastReadCycles = cycles;
@@ -642,11 +609,11 @@ int collectADC() {
   for (int i = 0; i < numChannels; i++) {
     int count = measureSamples[i];
     long sum = ledState ? measureHigh[i] : measureLow[i];
-    int ave = sum / count;  // round up/down
     if (count > 0) {
+      int ave = sum / count;  // round up/down
       (ledState ? resultHigh : resultLow)[i] = ave;
       if (debugSensors && sometimesDebug) {
-        Serial.print("#"); Serial.print(i); Serial.print(" = "); Serial.print(ave); Serial.print(", ");
+        Serial.print("#"); Serial.print(i); Serial.print(" = "); Serial.print(ave); Serial.print(", "); Serial.print("samples "); Serial.print(measureSamples[i]); Serial.print(", "); 
       }
     }
     if (ledState) {
@@ -657,7 +624,6 @@ int collectADC() {
     measureSamples[i] = 0;
   }
   readCycles = lastCycle = 0;
-  configureScanInputs();
   switchLEDState();
   startNextCycle = true;
   interrupts();
@@ -705,11 +671,6 @@ void updateSensorCounters() {
       }
       thr = (int)(((long)comp * red) / 100);
     }
-    /*
-      if (x == 2) {
-      Serial.print("Thr: "); Serial.print(thr); Serial.print(", diff: "); Serial.println(diff);
-      }
-    */
 
     if (diff > thr) {
       // the sensor received light above the base in the 'proper' time
@@ -717,7 +678,7 @@ void updateSensorCounters() {
     } else {
       sensorCounters[x]--;
     }
-    if (x == 1 || (sometimesDebug && debugSensors)) {
+    if (sometimesDebug && debugSensors) {
       Serial.print(F("C-")); Serial.print(x);
       Serial.print(F(", Low = ")); Serial.print(resultLow[x]);
       Serial.print(F(", High = ")); Serial.print(resultHigh[x]);
@@ -745,6 +706,22 @@ void switchLEDState() {
 volatile long maxConfigSensorDebounce = 0;
 long configSensorDebounce = 0;
 
+/**
+ * Set up sensor state bits to the initial "off" state. Done because some of the sensors may
+ * be inverted; in that case those sensors will 
+ */
+void initSensors() {
+  for (int i = 0; i < numChannels; i++) {
+      const AttachedSensor& sen = attachedSensors[i];
+      int v = 1 << i;
+      if (sen.invert) {
+        sensorStateBits |= v;
+      } else {
+        sensorStateBits &= ~v;
+      }
+      captureSensorBit(i + 1, sen.invert);
+  }
+}
 
 // Sets detected sensor state. First goes to the 'internal' state. Then, possibly after a delay
 // propagates into S88.
@@ -891,11 +868,11 @@ void updateSensorBits() {
         // if going down, wait at least the 'debounce' time before dropping the sensor bit from the result.
         if ((up != -1) && (diff < sen.debounce)) {
           if (sometimesDebug) {
-            Serial.print(F("Sensor debounced: ")); Serial.print(i); Serial.print(F(", time left: ")); Serial.println(t - sensorLastUp[i]);
+            Serial.print(F("Sensor debounced: ")); Serial.print(i); Serial.print(F(", time left: ")); Serial.print(t - sensorLastUp[i]);
+            Serial.print(F(", debounce: ")); Serial.println(sen.debounce);
           }
           vb = true;
         }
-        Serial.print("Sensor off from up: "); Serial.println(diff);
       }
     }
     sensorCounters[i] = 0;

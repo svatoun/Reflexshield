@@ -393,7 +393,7 @@ void setupCalibration() {
   configLastCommand = calibrationStart;
   terminalConfirm = false;
   if (debugControl) {
-    Serial.println("Calibration started");
+    Serial.println(F("Calibration started"));
   }
 }
 
@@ -404,7 +404,7 @@ void startCalibrationHigh() {
   terminalConfirm = false;
   makeLedAck(&blinkCalibrateCont[0]);
   if (debugControl) {
-    Serial.println("Calibration started");
+    Serial.println(F("Calibration started"));
   }
 }
 
@@ -602,7 +602,7 @@ void interpretButtons() {
     return;
   }
   if ((cfgState != CONFIG_NONE) && (nextLen > configButtonPress) && (plusLen == -1) && (minusLen == -1)) {
-    Serial.print("Exiting config. "); Serial.print("cfgState:"); Serial.print(cfgState); Serial.print("nextLen"); Serial.print(nextLen);
+    Serial.print(F("Exiting config. ")); Serial.print(F("cfgState:")); Serial.print(cfgState); Serial.print(F("nextLen")); Serial.print(nextLen);
     exitConfiguration();
     return;
   }

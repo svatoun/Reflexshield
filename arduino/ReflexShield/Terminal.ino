@@ -66,7 +66,7 @@ void processLineCommand() {
     inputPos = pos + 1;
   }
   if (debugInfra) {
-    Serial.print("Command: "); Serial.println(inputLine);
+    Serial.print(F("Command: ")); Serial.println(inputLine);
   }
   for (int i = 0; i < maxLineCommands; i++) {
     LineCommand &c = lineCommands[i];
@@ -196,4 +196,3 @@ void commandReset() {
   void (*func)() = 0;
   func();
 }
-
