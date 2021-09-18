@@ -21,11 +21,11 @@ void printSensorStatus() {
   byte b = sensorStateBits;
   sensorStatusLen = 0;
   for (int mask = 0x80; mask > 0; mask >>= 1) {
-    Serial.print(b & mask ? "1" : "0");
+    Serial.print(b & mask ? '1' : '0');
     sensorStatusLen++;
     if (mask > 1) {
       sensorStatusLen++;
-      Serial.print("-");
+      Serial.print('-');
     }
   }
 }
@@ -55,9 +55,9 @@ void printCalibrationStats() {
   Serial.print(F(", \tMax = ")); Serial.print(calibrationMax);
   Serial.print(F("      "));
   for (short i = 0; i < 100; i++) {
-    Serial.print("\b");
+    Serial.print('\b');
   }
-  Serial.print("\r");
+  Serial.print('\r');
 }
 
 void commandContinueCalibration() {
@@ -106,7 +106,7 @@ void commandSensitivity() {
   }
   channel--;
   AttachedSensor &as = attachedSensors[channel];
-  
+
   as.threshold = threshold;
   as.debounce = debounce;
   printSensorDef(channel, as);
@@ -151,23 +151,23 @@ void commandReduction() {
 }
 
 void printSensorDef(int i, const AttachedSensor& as) {
-    int sens = as.threshold;
-    int deb = as.debounce;
-    Serial.print("SEN:"); Serial.print(i + 1); Serial.print(':'); Serial.print(sens);
-    if (deb != defaultDebounce) {
-      Serial.print(':'); Serial.print(deb);
-    }
-    Serial.println();
-    if (as.invert) {
-      Serial.print("INV:"); Serial.println(i + 1);
-    }
+  int sens = as.threshold;
+  int deb = as.debounce;
+  Serial.print(F("SEN:")); Serial.print(i + 1); Serial.print(':'); Serial.print(sens);
+  if (deb != defaultDebounce) {
+    Serial.print(':'); Serial.print(deb);
+  }
+  Serial.println();
+  if (as.invert) {
+    Serial.print(F("INV:")); Serial.println(i + 1);
+  }
 
-    if (as.fadeOnTime > 0 || as.fadeOffTime > 0) {
-      Serial.print("SFT:"); Serial.print(as.fadeOnTime); Serial.print(':'); Serial.println(as.fadeOffTime);
-    }
-    if (as.occupiedReduction > 0) {
-      Serial.print("OTR:"); Serial.println(as.occupiedReduction); 
-    }
+  if (as.fadeOnTime > 0 || as.fadeOffTime > 0) {
+    Serial.print(F("SFT:")); Serial.print(as.fadeOnTime); Serial.print(':'); Serial.println(as.fadeOffTime);
+  }
+  if (as.occupiedReduction > 0) {
+    Serial.print(F("OTR:")); Serial.println(as.occupiedReduction);
+  }
 }
 
 void commandSave() {
@@ -197,7 +197,7 @@ void commandDump() {
 void monitorCallback(char c) {
   switch (c) {
     case '\n':
-      Serial.println("\n");
+      Serial.println('\n');
       break;
     case 'q':
       Serial.println(F("\nMonitoring stopped.\n"));
@@ -237,9 +237,9 @@ void handleMonitor() {
   lastMonitorTime = t;
   printSensorStatus();
   for (int i = 0; i < sensorStatusLen; i++) {
-    Serial.print("\b");
+    Serial.print('\b');
   }
-  Serial.print("\r");
+  Serial.print('\r');
 }
 
 void commandMonitor() {
@@ -339,7 +339,7 @@ void measureCallback(char c) {
       break;
     case 'r':
       resetCalibrationStats();
-      break;     
+      break;
   }
 }
 
@@ -358,7 +358,7 @@ void handleMeasure() {
     return;
   }
   Serial.print('\r');
-  Serial.print(configChannel + 1); 
+  Serial.print(configChannel + 1);
   Serial.print(F(": high=")); print3(resultHigh[configChannel]);
   Serial.print(F(", low=")); print3(resultLow[configChannel]);
   Serial.print(F(", min=")); print3(calibrationMin);

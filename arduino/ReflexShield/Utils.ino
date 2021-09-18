@@ -10,7 +10,7 @@ int eepromWriteInt(int addr, int t, int& checksum) {
   EEPROM.update(addr++, (t & 0xff));
   EEPROM.update(addr++, (t >> 8) & 0xff);
   if (debugControl) {
-    Serial.print(t & 0xff, HEX); Serial.print((t >> 8) & 0xff, HEX); Serial.print(" ");
+    Serial.print(t & 0xff, HEX); Serial.print((t >> 8) & 0xff, HEX); Serial.print(' ');
   }
   return addr;
 }
