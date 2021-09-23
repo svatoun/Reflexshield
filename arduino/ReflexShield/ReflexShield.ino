@@ -64,7 +64,7 @@
 #include "Settings.h"
 #include "Relays.h"
 
-#define STARTUP_MSG "ReflexShield (c) Belgarat@klfree.net, v. 1.3, 6/2021"
+#define STARTUP_MSG "ReflexShield (c) Belgarat@klfree.net, v. 3.0, 9/2021"
 
 const int debug = 1;            // set to >0 to activate debug output on the serial console. The collector will use delays 200ms and will print stats each 2s
 const int debugSensors = 0;
